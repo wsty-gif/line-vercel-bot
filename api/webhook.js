@@ -538,10 +538,16 @@ async function handleEvent(event) {
       userState.set(userId, state);
 
       await reply(event.replyToken, [
-        {
-          type: "text",
-          text: "ありがとうございます😊\n\n年齢を教えてください。",
-        },
+        quickReply("年齢を選択してください", [
+          "18～19",
+          "20～24",
+          "25～29",
+          "30～34",
+          "35～39",
+          "40～44",
+          "45～49",
+          "50歳以上",
+        ]),
       ]);
       return;
     }
