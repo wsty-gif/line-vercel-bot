@@ -366,74 +366,95 @@ async function handleEvent(event) {
       console.log("postback parsed:", data);
 
       if (data.type === "booking_select") {
-        const available = await isStillAvailable(data.start, data.end);
-        console.log("still available:", available);
-
-        if (!available) {
-          const slots = await getAvailableSlots();
-
-          if (slots.length === 0) {
-            await reply(event.replyToken, [
-              {
-                type: "text",
-                text: "申し訳ありません。選択された時間は埋まってしまいました。担当より別途ご連絡いたします。"
-              }
-            ]);
-            userState.delete(userId);
-            return;
-          }
-
-          await reply(event.replyToken, [
-            {
-              type: "text",
-              text: "申し訳ありません。選択された時間は埋まってしまいました。別の候補をお選びください。"
-            },
-            createSlotQuickReply(slots)
-          ]);
-          return;
-        }
-
-        const booking = await createBookingEvent(state, {
-          label: data.label,
-          start: data.start,
-          end: data.end,
-        });
-
-        console.log("booking event id:", booking?.id);
-        console.log("booking event htmlLink:", booking?.htmlLink);
-
+        // まず即時返信
         await reply(event.replyToken, [
           {
             type: "text",
-            text:
-              `面談予約を受け付けました😊\n\n` +
-              `予約日時：${data.label}\n` +
-              `希望職種：${state.job}\n` +
-              `希望勤務地：${state.area}\n` +
-              `転職時期：${state.timing}\n\n` +
-              `担当者より改めてご連絡いたします。`
+            text: `ご希望日時「${data.label}」で予約処理を進めています。少々お待ちください😊`
           }
         ]);
 
         try {
-          await saveToGas({
-            userId,
-            job: state.job,
-            area: state.area,
-            timing: state.timing,
-            bookingLabel: data.label,
-            bookingStart: data.start,
-            bookingEnd: data.end,
-            bookingEventId: booking.id,
-            bookingHtmlLink: booking.htmlLink || ""
-          });
-          console.log("saveToGas success");
-        } catch (gasError) {
-          console.error("saveToGas error:", gasError);
-        }
+          const available = await isStillAvailable(data.start, data.end);
+          console.log("still available:", available);
 
-        userState.delete(userId);
-        return;
+          if (!available) {
+            const slots = await getAvailableSlots();
+
+            if (slots.length === 0) {
+              await pushMessage(userId, [
+                {
+                  type: "text",
+                  text: "申し訳ありません。選択された時間は埋まってしまいました。担当より別途ご連絡いたします。"
+                }
+              ]);
+              userState.delete(userId);
+              return;
+            }
+
+            await pushMessage(userId, [
+              {
+                type: "text",
+                text: "申し訳ありません。選択された時間は埋まってしまいました。別の候補をお送りします。"
+              },
+              createSlotQuickReply(slots)
+            ]);
+            return;
+          }
+
+          const booking = await createBookingEvent(state, {
+            label: data.label,
+            start: data.start,
+            end: data.end,
+          });
+
+          console.log("booking event id:", booking?.id);
+          console.log("booking event htmlLink:", booking?.htmlLink);
+
+          try {
+            await saveToGas({
+              userId,
+              job: state.job,
+              area: state.area,
+              timing: state.timing,
+              bookingLabel: data.label,
+              bookingStart: data.start,
+              bookingEnd: data.end,
+              bookingEventId: booking.id,
+              bookingHtmlLink: booking.htmlLink || ""
+            });
+            console.log("saveToGas success");
+          } catch (gasError) {
+            console.error("saveToGas error:", gasError);
+          }
+
+          await pushMessage(userId, [
+            {
+              type: "text",
+              text:
+                `面談予約を受け付けました😊\n\n` +
+                `予約日時：${data.label}\n` +
+                `希望職種：${state.job}\n` +
+                `希望勤務地：${state.area}\n` +
+                `転職時期：${state.timing}\n\n` +
+                `担当者より改めてご連絡いたします。`
+            }
+          ]);
+
+          userState.delete(userId);
+          return;
+
+        } catch (error) {
+          console.error("postback booking error:", error);
+
+          await pushMessage(userId, [
+            {
+              type: "text",
+              text: "申し訳ありません。予約処理中にエラーが発生しました。担当より別途ご連絡いたします。"
+            }
+          ]);
+          return;
+        }
       }
 
       await reply(event.replyToken, [
@@ -487,3 +508,25 @@ export default {
     return new Response("Method Not Allowed", { status: 405 });
   },
 };
+
+async function pushMessage(userId, messages) {
+  const res = await fetch("https://api.line.me/v2/bot/message/push", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + process.env.LINE_CHANNEL_ACCESS_TOKEN,
+    },
+    body: JSON.stringify({
+      to: userId,
+      messages,
+    }),
+  });
+
+  const text = await res.text();
+  console.log("LINE push status:", res.status);
+  console.log("LINE push body:", text);
+
+  if (!res.ok) {
+    throw new Error(`LINE push failed: ${res.status} ${text}`);
+  }
+}
