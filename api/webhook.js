@@ -345,20 +345,93 @@ async function handleEvent(event) {
     return;
   }
 
-  if (data.type === "booking_select") {
-    const available = await isStillAvailable(data.start, data.end);
-    console.log("still available:", available);
+  if (event.type === "postback") {
+    const state = userState.get(userId);
 
-    if (!available) {
-      const slots = await getAvailableSlots();
+    if (!state) {
+      await reply(event.replyToken, [
+        {
+          type: "text",
+          text: "予約情報の保持に失敗しました。恐れ入りますが、最初からもう一度お試しください。"
+        }
+      ]);
+      return;
+    }
 
-      if (slots.length === 0) {
+    try {
+      const rawData = event.postback?.data || "{}";
+      console.log("postback rawData:", rawData);
+
+      const data = JSON.parse(rawData);
+      console.log("postback parsed:", data);
+
+      if (data.type === "booking_select") {
+        const available = await isStillAvailable(data.start, data.end);
+        console.log("still available:", available);
+
+        if (!available) {
+          const slots = await getAvailableSlots();
+
+          if (slots.length === 0) {
+            await reply(event.replyToken, [
+              {
+                type: "text",
+                text: "申し訳ありません。選択された時間は埋まってしまいました。担当より別途ご連絡いたします。"
+              }
+            ]);
+            userState.delete(userId);
+            return;
+          }
+
+          await reply(event.replyToken, [
+            {
+              type: "text",
+              text: "申し訳ありません。選択された時間は埋まってしまいました。別の候補をお選びください。"
+            },
+            createSlotQuickReply(slots)
+          ]);
+          return;
+        }
+
+        const booking = await createBookingEvent(state, {
+          label: data.label,
+          start: data.start,
+          end: data.end,
+        });
+
+        console.log("booking event id:", booking?.id);
+        console.log("booking event htmlLink:", booking?.htmlLink);
+
         await reply(event.replyToken, [
           {
             type: "text",
-            text: "申し訳ありません。選択された時間は埋まってしまいました。担当より別途ご連絡いたします。"
+            text:
+              `面談予約を受け付けました😊\n\n` +
+              `予約日時：${data.label}\n` +
+              `希望職種：${state.job}\n` +
+              `希望勤務地：${state.area}\n` +
+              `転職時期：${state.timing}\n\n` +
+              `担当者より改めてご連絡いたします。`
           }
         ]);
+
+        try {
+          await saveToGas({
+            userId,
+            job: state.job,
+            area: state.area,
+            timing: state.timing,
+            bookingLabel: data.label,
+            bookingStart: data.start,
+            bookingEnd: data.end,
+            bookingEventId: booking.id,
+            bookingHtmlLink: booking.htmlLink || ""
+          });
+          console.log("saveToGas success");
+        } catch (gasError) {
+          console.error("saveToGas error:", gasError);
+        }
+
         userState.delete(userId);
         return;
       }
@@ -366,51 +439,22 @@ async function handleEvent(event) {
       await reply(event.replyToken, [
         {
           type: "text",
-          text: "申し訳ありません。選択された時間は埋まってしまいました。別の候補をお選びください。"
-        },
-        createSlotQuickReply(slots)
+          text: "予約内容の判定に失敗しました。恐れ入りますが、もう一度お試しください。"
+        }
+      ]);
+      return;
+
+    } catch (error) {
+      console.error("postback booking error:", error);
+
+      await reply(event.replyToken, [
+        {
+          type: "text",
+          text: "申し訳ありません。予約処理中にエラーが発生しました。担当より別途ご連絡いたします。"
+        }
       ]);
       return;
     }
-
-    const booking = await createBookingEvent(state, {
-      label: data.label,
-      start: data.start,
-      end: data.end,
-    });
-
-    await reply(event.replyToken, [
-      {
-        type: "text",
-        text:
-          `面談予約を受け付けました😊\n\n` +
-          `予約日時：${data.label}\n` +
-          `希望職種：${state.job}\n` +
-          `希望勤務地：${state.area}\n` +
-          `転職時期：${state.timing}\n\n` +
-          `担当者より改めてご連絡いたします。`
-      }
-    ]);
-
-    try {
-      await saveToGas({
-        userId,
-        job: state.job,
-        area: state.area,
-        timing: state.timing,
-        bookingLabel: data.label,
-        bookingStart: data.start,
-        bookingEnd: data.end,
-        bookingEventId: booking.id,
-        bookingHtmlLink: booking.htmlLink || ""
-      });
-      console.log("saveToGas success");
-    } catch (gasError) {
-      console.error("saveToGas error:", gasError);
-    }
-
-    userState.delete(userId);
-    return;
   }
 }
 
