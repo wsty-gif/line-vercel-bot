@@ -2,6 +2,55 @@ import { google } from "googleapis";
 
 const userState = new Map();
 
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const LEAD_TIME_MS = 60 * 60 * 1000; // 1時間後から表示
+
+function toJst(date) {
+  return new Date(date.getTime() + JST_OFFSET_MS);
+}
+
+function getJstParts(date) {
+  const j = toJst(date);
+  return {
+    year: j.getUTCFullYear(),
+    month: j.getUTCMonth() + 1,
+    day: j.getUTCDate(),
+    weekday: j.getUTCDay(),
+    hour: j.getUTCHours(),
+    minute: j.getUTCMinutes(),
+  };
+}
+
+function makeUtcDateFromJst(year, month, day, hour = 0, minute = 0) {
+  return new Date(Date.UTC(year, month - 1, day, hour - 9, minute, 0));
+}
+
+function formatSlotLabel(date) {
+  const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+  const j = toJst(date);
+
+  const m = j.getUTCMonth() + 1;
+  const d = j.getUTCDate();
+  const w = weekdays[j.getUTCDay()];
+  const hh = String(j.getUTCHours()).padStart(2, "0");
+  const mm = String(j.getUTCMinutes()).padStart(2, "0");
+
+  return `${m}/${d}(${w}) ${hh}:${mm}`;
+}
+
+function toGoogleJstDateTime(date) {
+  const j = toJst(date);
+
+  const y = j.getUTCFullYear();
+  const m = String(j.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(j.getUTCDate()).padStart(2, "0");
+  const hh = String(j.getUTCHours()).padStart(2, "0");
+  const mm = String(j.getUTCMinutes()).padStart(2, "0");
+  const ss = String(j.getUTCSeconds()).padStart(2, "0");
+
+  return `${y}-${m}-${d}T${hh}:${mm}:${ss}+09:00`;
+}
+
 function getPrivateKey() {
   const key = process.env.GOOGLE_PRIVATE_KEY || "";
   return key.replace(/\\n/g, "\n");
@@ -29,16 +78,6 @@ function overlaps(slotStart, slotEnd, busyStart, busyEnd) {
   return slotStart < busyEnd && slotEnd > busyStart;
 }
 
-function formatSlotLabel(date) {
-  const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
-  const m = date.getMonth() + 1;
-  const d = date.getDate();
-  const w = weekdays[date.getDay()];
-  const hh = String(date.getHours()).padStart(2, "0");
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  return `${m}/${d}(${w}) ${hh}:${mm}`;
-}
-
 async function getAvailableSlots() {
   const calendar = await getCalendarClient();
 
@@ -48,8 +87,9 @@ async function getAvailableSlots() {
     .filter(Boolean);
 
   const now = new Date();
-  const after7days = new Date();
-  after7days.setDate(now.getDate() + 7);
+  const minSelectableTime = new Date(now.getTime() + LEAD_TIME_MS);
+
+  const after7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
   const fb = await calendar.freebusy.query({
     requestBody: {
@@ -72,44 +112,50 @@ async function getAvailableSlots() {
   }
 
   const slots = [];
+  const baseJst = getJstParts(now);
 
   for (let i = 0; i < 7; i++) {
-    const day = new Date(now);
-    day.setDate(now.getDate() + i);
-    day.setHours(10, 0, 0, 0);
+    // JST日付ベースで日ごとに処理
+    const jstDayBase = new Date(Date.UTC(baseJst.year, baseJst.month - 1, baseJst.day + i));
+    const year = jstDayBase.getUTCFullYear();
+    const month = jstDayBase.getUTCMonth() + 1;
+    const day = jstDayBase.getUTCDate();
+    const weekday = jstDayBase.getUTCDay();
 
-    if (!isWeekday(day)) continue;
+    // 平日のみ
+    if (weekday === 0 || weekday === 6) continue;
 
-    while (day.getHours() < 18) {
-      const slotStart = new Date(day);
-      const slotEnd = new Date(day);
-      slotEnd.setMinutes(slotEnd.getMinutes() + 30);
+    for (let hour = 10; hour < 18; hour++) {
+      for (const minute of [0, 30]) {
+        const slotStart = makeUtcDateFromJst(year, month, day, hour, minute);
+        const slotEnd = makeUtcDateFromJst(year, month, day, hour, minute + 30);
 
-      if (slotEnd.getHours() > 18 || (slotEnd.getHours() === 18 && slotEnd.getMinutes() > 0)) {
-        break;
-      }
+        // 18:00を超える枠は除外
+        const endJst = getJstParts(slotEnd);
+        if (endJst.hour > 18 || (endJst.hour === 18 && endJst.minute > 0)) {
+          continue;
+        }
 
-      if (slotStart <= now) {
-        day.setMinutes(day.getMinutes() + 30);
-        continue;
-      }
+        // 現在時刻から1時間後以降のみ
+        if (slotStart < minSelectableTime) {
+          continue;
+        }
 
-      const isBusy = busyList.some((b) =>
-        overlaps(slotStart, slotEnd, b.start, b.end)
-      );
+        const isBusy = busyList.some((b) =>
+          overlaps(slotStart, slotEnd, b.start, b.end)
+        );
 
-      if (!isBusy) {
-        slots.push({
-          label: formatSlotLabel(slotStart),
-          start: slotStart.toISOString(),
-          end: slotEnd.toISOString(),
-        });
-      }
+        if (!isBusy) {
+          slots.push({
+            label: formatSlotLabel(slotStart),
+            start: slotStart.toISOString(),
+            end: slotEnd.toISOString(),
+          });
+        }
 
-      day.setMinutes(day.getMinutes() + 30);
-
-      if (slots.length >= 5) {
-        return slots;
+        if (slots.length >= 5) {
+          return slots;
+        }
       }
     }
   }
@@ -147,6 +193,9 @@ async function isStillAvailable(start, end) {
 async function createBookingEvent(state, slot) {
   const calendar = await getCalendarClient();
 
+  const startDate = new Date(slot.start);
+  const endDate = new Date(slot.end);
+
   const result = await calendar.events.insert({
     calendarId: process.env.BOOKING_CALENDAR_ID,
     requestBody: {
@@ -158,11 +207,11 @@ async function createBookingEvent(state, slot) {
         `予約枠: ${slot.label}\n` +
         `LINE userId: ${state.userId || ""}`,
       start: {
-        dateTime: slot.start,
+        dateTime: toGoogleJstDateTime(startDate),
         timeZone: "Asia/Tokyo",
       },
       end: {
-        dateTime: slot.end,
+        dateTime: toGoogleJstDateTime(endDate),
         timeZone: "Asia/Tokyo",
       },
     },
