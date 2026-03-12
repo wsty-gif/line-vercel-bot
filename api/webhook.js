@@ -168,6 +168,11 @@ async function createBookingEvent(state, slot) {
     },
   });
 
+  console.log("booking event id:", result.data.id);
+  console.log("booking event htmlLink:", result.data.htmlLink);
+  console.log("booking event start:", result.data.start);
+  console.log("booking event end:", result.data.end);
+
   return result.data;
 }
 
@@ -212,7 +217,7 @@ function createSlotQuickReply(slots) {
 }
 
 async function reply(replyToken, messages) {
-  await fetch("https://api.line.me/v2/bot/message/reply", {
+  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -223,6 +228,14 @@ async function reply(replyToken, messages) {
       messages,
     }),
   });
+
+  const text = await res.text();
+  console.log("LINE reply status:", res.status);
+  console.log("LINE reply body:", text);
+
+  if (!res.ok) {
+    throw new Error(`LINE reply failed: ${res.status} ${text}`);
+  }
 }
 
 async function saveToGas(data) {
@@ -332,45 +345,54 @@ async function handleEvent(event) {
     return;
   }
 
-  if (event.type === "postback") {
-    const state = userState.get(userId);
-    if (!state) return;
+  if (data.type === "booking_select") {
+    const available = await isStillAvailable(data.start, data.end);
+    console.log("still available:", available);
 
-    const data = JSON.parse(event.postback.data || "{}");
+    if (!available) {
+      const slots = await getAvailableSlots();
 
-    if (data.type === "booking_select") {
-      const available = await isStillAvailable(data.start, data.end);
-
-      if (!available) {
-        const slots = await getAvailableSlots();
-
-        if (slots.length === 0) {
-          await reply(event.replyToken, [
-            {
-              type: "text",
-              text: "申し訳ありません。選択された時間は埋まってしまいました。担当より別途ご連絡いたします。",
-            },
-          ]);
-          userState.delete(userId);
-          return;
-        }
-
+      if (slots.length === 0) {
         await reply(event.replyToken, [
           {
             type: "text",
-            text: "申し訳ありません。選択された時間は埋まってしまいました。別の候補をお選びください。",
-          },
-          createSlotQuickReply(slots),
+            text: "申し訳ありません。選択された時間は埋まってしまいました。担当より別途ご連絡いたします。"
+          }
         ]);
+        userState.delete(userId);
         return;
       }
 
-      const booking = await createBookingEvent(state, {
-        label: data.label,
-        start: data.start,
-        end: data.end,
-      });
+      await reply(event.replyToken, [
+        {
+          type: "text",
+          text: "申し訳ありません。選択された時間は埋まってしまいました。別の候補をお選びください。"
+        },
+        createSlotQuickReply(slots)
+      ]);
+      return;
+    }
 
+    const booking = await createBookingEvent(state, {
+      label: data.label,
+      start: data.start,
+      end: data.end,
+    });
+
+    await reply(event.replyToken, [
+      {
+        type: "text",
+        text:
+          `面談予約を受け付けました😊\n\n` +
+          `予約日時：${data.label}\n` +
+          `希望職種：${state.job}\n` +
+          `希望勤務地：${state.area}\n` +
+          `転職時期：${state.timing}\n\n` +
+          `担当者より改めてご連絡いたします。`
+      }
+    ]);
+
+    try {
       await saveToGas({
         userId,
         job: state.job,
@@ -380,24 +402,15 @@ async function handleEvent(event) {
         bookingStart: data.start,
         bookingEnd: data.end,
         bookingEventId: booking.id,
+        bookingHtmlLink: booking.htmlLink || ""
       });
-
-      await reply(event.replyToken, [
-        {
-          type: "text",
-          text:
-            `面談予約を受け付けました😊\n\n` +
-            `予約日時：${data.label}\n` +
-            `希望職種：${state.job}\n` +
-            `希望勤務地：${state.area}\n` +
-            `転職時期：${state.timing}\n\n` +
-            `担当者より改めてご連絡いたします。`,
-        },
-      ]);
-
-      userState.delete(userId);
-      return;
+      console.log("saveToGas success");
+    } catch (gasError) {
+      console.error("saveToGas error:", gasError);
     }
+
+    userState.delete(userId);
+    return;
   }
 }
 
