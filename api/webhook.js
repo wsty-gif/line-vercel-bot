@@ -321,6 +321,25 @@ async function handleEvent(event) {
     const text = event.message.text.trim();
     const state = userState.get(userId);
 
+    if (["最初から", "やり直し", "リセット"].includes(text)) {
+      userState.set(userId, {
+        step: "job",
+        userId: userId,
+        job: "",
+        area: "",
+        timing: ""
+      });
+
+      await reply(event.replyToken, [
+        {
+          type: "text",
+          text: "ご希望条件の入力を最初からやり直します😊"
+        },
+        createFirstQuestionMessage()
+      ]);
+      return;
+    }
+
     if (!state) {
       await reply(event.replyToken, [
         {
@@ -400,25 +419,6 @@ async function handleEvent(event) {
 
   if (event.type === "postback") {
     const state = userState.get(userId);
-
-  if (["最初から", "やり直し", "リセット"].includes(text)) {
-    userState.set(userId, {
-      step: "job",
-      userId: userId,
-      job: "",
-      area: "",
-      timing: ""
-    });
-
-    await reply(event.replyToken, [
-      {
-        type: "text",
-        text: "ご希望条件の入力を最初からやり直します😊"
-      },
-      createFirstQuestionMessage()
-    ]);
-    return;
-  }
 
   if (!state) {
     userState.set(userId, {
