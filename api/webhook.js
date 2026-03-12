@@ -79,6 +79,17 @@ function formatSlotLabel(date) {
   return `${m}/${d}(${w}) ${hh}:${mm}`;
 }
 
+function createFirstQuestionMessage() {
+  return {
+    type: "text",
+    text:
+      "ご登録ありがとうございます😊\n\n" +
+      "まずはプロフィールとご希望条件を教えてください。\n\n" +
+      "最初に、お名前を入力してください。\n" +
+      "※やり直したい場合は「やり直し」と送ってください。",
+  };
+}
+
 function quickReply(text, options) {
   return {
     type: "text",
@@ -94,13 +105,6 @@ function quickReply(text, options) {
       })),
     },
   };
-}
-
-function createFirstQuestionMessage() {
-  return quickReply(
-    "ご登録ありがとうございます😊\n\nまずはご希望条件を3つ教えてください。\n\n1. 希望職種\n2. 希望勤務地\n3. 転職時期\n\n最初に、ご希望の職種を1つ選んでください。\n※やり直したい場合は「やり直し」と送ってください。",
-    ["営業", "事務", "販売", "施工管理", "コールセンター", "IT", "その他"]
-  );
 }
 
 function createSlotQuickReply(slots, offset = 0) {
@@ -344,8 +348,11 @@ async function createBookingEvent(state, slot) {
   const result = await calendar.events.insert({
     calendarId: process.env.BOOKING_CALENDAR_ID,
     requestBody: {
-      summary: `LINE面談予約｜${state.job}｜${state.area}`,
+      summary: `LINE面談予約｜${state.name}｜${state.job}`,
       description:
+        `名前: ${state.name}\n` +
+        `年齢: ${state.age}\n` +
+        `電話番号: ${state.phone}\n\n` +
         `希望職種: ${state.job}\n` +
         `希望勤務地: ${state.area}\n` +
         `転職時期: ${state.timing}\n` +
@@ -370,15 +377,56 @@ async function createBookingEvent(state, slot) {
   return result.data;
 }
 
+async function createManualAdjustmentEvent(state, manualRequest) {
+  const calendar = await getCalendarClient();
+
+  const startDate = new Date(Date.now() + 5 * 60 * 1000);
+  const endDate = new Date(startDate.getTime() + 30 * 60 * 1000);
+
+  const result = await calendar.events.insert({
+    calendarId: process.env.BOOKING_CALENDAR_ID,
+    requestBody: {
+      summary: `【要調整】LINE面談｜${state.name}｜${state.job}`,
+      description:
+        `名前: ${state.name}\n` +
+        `年齢: ${state.age}\n` +
+        `電話番号: ${state.phone}\n\n` +
+        `希望職種: ${state.job}\n` +
+        `希望勤務地: ${state.area}\n` +
+        `転職時期: ${state.timing}\n\n` +
+        `希望日時メモ: ${manualRequest}\n` +
+        `LINE userId: ${state.userId || ""}\n` +
+        `※この予定は手動調整用の仮登録です。`,
+      start: {
+        dateTime: toGoogleJstDateTime(startDate),
+        timeZone: "Asia/Tokyo",
+      },
+      end: {
+        dateTime: toGoogleJstDateTime(endDate),
+        timeZone: "Asia/Tokyo",
+      },
+    },
+  });
+
+  console.log("manual booking event id:", result.data.id);
+  console.log("manual booking event htmlLink:", result.data.htmlLink);
+  console.log("manual booking event start:", result.data.start);
+  console.log("manual booking event end:", result.data.end);
+
+  return result.data;
+}
+
 async function handleEvent(event) {
   const userId = event.source?.userId;
   if (!userId) return;
 
-  // 友だち追加
   if (event.type === "follow") {
     userState.set(userId, {
-      step: "job",
+      step: "name",
       userId,
+      name: "",
+      age: "",
+      phone: "",
       job: "",
       area: "",
       timing: "",
@@ -388,15 +436,16 @@ async function handleEvent(event) {
     return;
   }
 
-  // テキストメッセージ
   if (event.type === "message" && event.message?.type === "text") {
     const text = event.message.text.trim();
 
-    // やり直し
     if (["最初から", "やり直し", "リセット"].includes(text)) {
       userState.set(userId, {
-        step: "job",
+        step: "name",
         userId,
+        name: "",
+        age: "",
+        phone: "",
         job: "",
         area: "",
         timing: "",
@@ -405,7 +454,7 @@ async function handleEvent(event) {
       await reply(event.replyToken, [
         {
           type: "text",
-          text: "ご希望条件の入力を最初からやり直します😊",
+          text: "入力を最初からやり直します😊",
         },
         createFirstQuestionMessage(),
       ]);
@@ -414,11 +463,13 @@ async function handleEvent(event) {
 
     const state = userState.get(userId);
 
-    // state消失時もその場で再開
     if (!state) {
       userState.set(userId, {
-        step: "job",
+        step: "name",
         userId,
+        name: "",
+        age: "",
+        phone: "",
         job: "",
         area: "",
         timing: "",
@@ -434,39 +485,99 @@ async function handleEvent(event) {
       return;
     }
 
-    // 手動日程調整入力
     if (state.step === "booking_manual_request") {
-      await saveToGas({
-        userId,
-        job: state.job,
-        area: state.area,
-        timing: state.timing,
-        bookingLabel: "手動調整希望",
-        bookingStart: "",
-        bookingEnd: "",
-        bookingEventId: "",
-        bookingHtmlLink: "",
-        manualRequest: text,
-      });
+      try {
+        const manualBooking = await createManualAdjustmentEvent(state, text);
+
+        await saveToGas({
+          userId,
+          name: state.name,
+          age: state.age,
+          phone: state.phone,
+          job: state.job,
+          area: state.area,
+          timing: state.timing,
+          bookingLabel: "手動調整希望",
+          bookingStart: manualBooking.start?.dateTime || "",
+          bookingEnd: manualBooking.end?.dateTime || "",
+          bookingEventId: manualBooking.id || "",
+          bookingHtmlLink: manualBooking.htmlLink || "",
+          manualRequest: text,
+        });
+
+        await reply(event.replyToken, [
+          {
+            type: "text",
+            text:
+              "ありがとうございます😊\n" +
+              "ご希望日時を受け付けました。\n" +
+              "手動調整用としてカレンダーにも登録しましたので、担当者より調整のうえ改めてご連絡いたします。",
+          },
+        ]);
+
+        userState.delete(userId);
+        return;
+      } catch (error) {
+        console.error("manual booking error:", error);
+
+        await reply(event.replyToken, [
+          {
+            type: "text",
+            text:
+              "ご希望日時は受け付けましたが、手動調整用の登録でエラーが発生しました。\n" +
+              "担当者より改めてご連絡いたします。",
+          },
+        ]);
+        return;
+      }
+    }
+
+    if (state.step === "name") {
+      state.name = text;
+      state.step = "age";
+      userState.set(userId, state);
 
       await reply(event.replyToken, [
         {
           type: "text",
-          text: "ありがとうございます😊\nご希望日時を受け付けました。担当者より調整のうえ改めてご連絡いたします。",
+          text: "ありがとうございます😊\n\n年齢を教えてください。",
         },
       ]);
-
-      userState.delete(userId);
       return;
     }
 
-    // 希望職種
+    if (state.step === "age") {
+      state.age = text;
+      state.step = "phone";
+      userState.set(userId, state);
+
+      await reply(event.replyToken, [
+        {
+          type: "text",
+          text: "ありがとうございます😊\n\n電話番号を入力してください。",
+        },
+      ]);
+      return;
+    }
+
+    if (state.step === "phone") {
+      state.phone = text;
+      state.step = "job";
+      userState.set(userId, state);
+
+      await reply(event.replyToken, [
+        quickReply(
+          "ありがとうございます😊\n\n希望職種を選んでください。",
+          ["営業", "事務", "販売", "施工管理", "コールセンター", "IT", "その他"]
+        ),
+      ]);
+      return;
+    }
+
     if (state.step === "job") {
       state.job = text;
       state.step = "area";
       userState.set(userId, state);
-
-      console.log("state after job:", JSON.stringify(state));
 
       await reply(event.replyToken, [
         quickReply(
@@ -477,13 +588,10 @@ async function handleEvent(event) {
       return;
     }
 
-    // 希望勤務地
     if (state.step === "area") {
       state.area = text;
       state.step = "timing";
       userState.set(userId, state);
-
-      console.log("state after area:", JSON.stringify(state));
 
       await reply(event.replyToken, [
         quickReply(
@@ -494,13 +602,10 @@ async function handleEvent(event) {
       return;
     }
 
-    // 転職時期
     if (state.step === "timing") {
       state.timing = text;
       state.step = "booking_select";
       userState.set(userId, state);
-
-      console.log("state after timing:", JSON.stringify(state));
 
       const slots = await getAvailableSlots(0, 5);
 
@@ -527,7 +632,6 @@ async function handleEvent(event) {
     return;
   }
 
-  // postback
   if (event.type === "postback") {
     const state = userState.get(userId);
 
@@ -548,7 +652,6 @@ async function handleEvent(event) {
       const data = JSON.parse(rawData);
       console.log("postback parsed:", data);
 
-      // 別の候補を見る
       if (data.type === "booking_more") {
         await reply(event.replyToken, [
           {
@@ -573,7 +676,6 @@ async function handleEvent(event) {
         return;
       }
 
-      // その他の日程を希望
       if (data.type === "booking_other_request") {
         state.step = "booking_manual_request";
         userState.set(userId, state);
@@ -593,9 +695,7 @@ async function handleEvent(event) {
         return;
       }
 
-      // 候補選択
       if (data.type === "booking_select") {
-        // 先に即時返信
         await reply(event.replyToken, [
           {
             type: "text",
@@ -637,44 +737,28 @@ async function handleEvent(event) {
             end: data.end,
           });
 
-          console.log(
-            "save payload:",
-            JSON.stringify({
-              userId,
-              job: state.job,
-              area: state.area,
-              timing: state.timing,
-              bookingLabel: data.label,
-              bookingStart: data.start,
-              bookingEnd: data.end,
-              bookingEventId: booking.id,
-              bookingHtmlLink: booking.htmlLink || "",
-            })
-          );
-
-          try {
-            await saveToGas({
-              userId,
-              job: state.job,
-              area: state.area,
-              timing: state.timing,
-              bookingLabel: data.label,
-              bookingStart: data.start,
-              bookingEnd: data.end,
-              bookingEventId: booking.id,
-              bookingHtmlLink: booking.htmlLink || "",
-              manualRequest: "",
-            });
-            console.log("saveToGas success");
-          } catch (gasError) {
-            console.error("saveToGas error:", gasError);
-          }
+          await saveToGas({
+            userId,
+            name: state.name,
+            age: state.age,
+            phone: state.phone,
+            job: state.job,
+            area: state.area,
+            timing: state.timing,
+            bookingLabel: data.label,
+            bookingStart: data.start,
+            bookingEnd: data.end,
+            bookingEventId: booking.id,
+            bookingHtmlLink: booking.htmlLink || "",
+            manualRequest: "",
+          });
 
           await pushMessage(userId, [
             {
               type: "text",
               text:
                 `面談予約を受け付けました😊\n\n` +
+                `お名前：${state.name}\n` +
                 `予約日時：${data.label}\n` +
                 `希望職種：${state.job}\n` +
                 `希望勤務地：${state.area}\n` +
