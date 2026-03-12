@@ -307,17 +307,17 @@ async function handleEvent(event) {
   if (event.type === "follow") {
     userState.set(userId, {
       step: "job",
-      userId,
+      userId: userId,
       job: "",
       area: "",
-      timing: "",
+      timing: ""
     });
 
     await reply(event.replyToken, [
       quickReply(
         "ご登録ありがとうございます😊\n\n3つだけ教えてください。\n①希望職種\n②希望勤務地\n③転職時期\n\nまずは希望職種を教えてください。",
         ["営業", "事務", "販売", "施工管理", "コールセンター", "IT", "その他"]
-      ),
+      )
     ]);
     return;
   }
@@ -330,44 +330,53 @@ async function handleEvent(event) {
       await reply(event.replyToken, [
         {
           type: "text",
-          text: "最初からご案内しますので、もう一度友だち追加後のメッセージからご回答ください。",
-        },
+          text: "最初からご案内しますので、もう一度友だち追加後のメッセージからご回答ください。"
+        }
       ]);
       return;
     }
 
+    // 希望職種
     if (state.step === "job") {
       state.job = text;
       state.step = "area";
       userState.set(userId, state);
 
+      console.log("state after job:", JSON.stringify(state));
+
       await reply(event.replyToken, [
         quickReply(
           "ありがとうございます😊\n希望勤務地を教えてください。",
           ["関東", "関西", "東海", "九州", "全国"]
-        ),
+        )
       ]);
       return;
     }
 
+    // 希望勤務地
     if (state.step === "area") {
       state.area = text;
       state.step = "timing";
       userState.set(userId, state);
 
+      console.log("state after area:", JSON.stringify(state));
+
       await reply(event.replyToken, [
         quickReply(
           "ありがとうございます😊\n転職時期を教えてください。",
           ["すぐに", "1か月以内", "3か月以内", "半年以内", "良い求人があれば"]
-        ),
+        )
       ]);
       return;
     }
 
+    // 転職時期
     if (state.step === "timing") {
       state.timing = text;
       state.step = "booking_select";
       userState.set(userId, state);
+
+      console.log("state after timing:", JSON.stringify(state));
 
       const slots = await getAvailableSlots();
 
@@ -375,8 +384,8 @@ async function handleEvent(event) {
         await reply(event.replyToken, [
           {
             type: "text",
-            text: "現在ご案内できる面談候補が見つかりませんでした。担当より別途ご連絡いたします。",
-          },
+            text: "現在ご案内できる面談候補が見つかりませんでした。担当より別途ご連絡いたします。"
+          }
         ]);
         return;
       }
@@ -388,8 +397,8 @@ async function handleEvent(event) {
     await reply(event.replyToken, [
       {
         type: "text",
-        text: "ご希望条件は確認済みです。候補日時の選択をお願いします😊",
-      },
+        text: "ご希望条件は確認済みです。候補日時の選択をお願いします😊"
+      }
     ]);
     return;
   }
