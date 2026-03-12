@@ -1,0 +1,9 @@
+{
+  "name": "line-vercel-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "googleapis": "^171.4.0"
+  }
+}
