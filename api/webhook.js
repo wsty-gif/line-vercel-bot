@@ -313,12 +313,7 @@ async function handleEvent(event) {
       timing: ""
     });
 
-    await reply(event.replyToken, [
-      quickReply(
-        "ご登録ありがとうございます😊\n\n3つだけ教えてください。\n①希望職種\n②希望勤務地\n③転職時期\n\nまずは希望職種を教えてください。",
-        ["営業", "事務", "販売", "施工管理", "コールセンター", "IT", "その他"]
-      )
-    ]);
+    await reply(event.replyToken, [createFirstQuestionMessage()]);
     return;
   }
 
@@ -406,15 +401,43 @@ async function handleEvent(event) {
   if (event.type === "postback") {
     const state = userState.get(userId);
 
-    if (!state) {
-      await reply(event.replyToken, [
-        {
-          type: "text",
-          text: "予約情報の保持に失敗しました。恐れ入りますが、最初からもう一度お試しください。"
-        }
-      ]);
-      return;
-    }
+  if (["最初から", "やり直し", "リセット"].includes(text)) {
+    userState.set(userId, {
+      step: "job",
+      userId: userId,
+      job: "",
+      area: "",
+      timing: ""
+    });
+
+    await reply(event.replyToken, [
+      {
+        type: "text",
+        text: "ご希望条件の入力を最初からやり直します😊"
+      },
+      createFirstQuestionMessage()
+    ]);
+    return;
+  }
+
+  if (!state) {
+    userState.set(userId, {
+      step: "job",
+      userId: userId,
+      job: "",
+      area: "",
+      timing: ""
+    });
+
+    await reply(event.replyToken, [
+      {
+        type: "text",
+        text: "最初からご案内します😊"
+      },
+      createFirstQuestionMessage()
+    ]);
+    return;
+  }
 
     try {
       const rawData = event.postback?.data || "{}";
@@ -587,4 +610,11 @@ async function pushMessage(userId, messages) {
   if (!res.ok) {
     throw new Error(`LINE push failed: ${res.status} ${text}`);
   }
+}
+
+function createFirstQuestionMessage() {
+  return quickReply(
+    "ご登録ありがとうございます😊\n\n3つだけ教えてください。\n①希望職種\n②希望勤務地\n③転職時期\n\nまずは希望職種を教えてください。",
+    ["営業", "事務", "販売", "施工管理", "コールセンター", "IT", "その他"]
+  );
 }
