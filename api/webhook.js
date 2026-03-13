@@ -8,6 +8,26 @@ const MIN_AVAILABLE_USERS = 2; // 2ユーザー以上空いている枠だけ表
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const LEAD_TIME_MS = 60 * 60 * 1000; // 現在時刻から1時間後以降
 
+function createInitialState(userId) {
+  return {
+    sessionId: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    step: "name",
+    userId,
+    name: "",
+    age: "",
+    phone: "",
+    job: "",
+    area: "",
+    timing: "",
+  };
+}
+
+function resetConversation(userId) {
+  const newState = createInitialState(userId);
+  userState.set(userId, newState);
+  return newState;
+}
+
 function getPrivateKey() {
   const key = process.env.GOOGLE_PRIVATE_KEY || "";
   return key.replace(/\\n/g, "\n");
@@ -112,7 +132,7 @@ function quickReply(text, options) {
   };
 }
 
-function createSlotQuickReply(slots, offset = 0) {
+function createSlotQuickReply(slots, offset = 0, sessionId = "") {
   const slotItems = slots.map((slot) => ({
     type: "action",
     action: {
@@ -123,6 +143,7 @@ function createSlotQuickReply(slots, offset = 0) {
         start: slot.start,
         end: slot.end,
         label: slot.label,
+        sessionId,
       }),
       displayText: slot.label,
     },
@@ -137,6 +158,7 @@ function createSlotQuickReply(slots, offset = 0) {
         data: JSON.stringify({
           type: "booking_more",
           offset: offset + slots.length,
+          sessionId,
         }),
         displayText: "別の候補を見る",
       },
@@ -148,6 +170,7 @@ function createSlotQuickReply(slots, offset = 0) {
         label: "その他の日程を希望",
         data: JSON.stringify({
           type: "booking_other_request",
+          sessionId,
         }),
         displayText: "その他の日程を希望",
       },
@@ -438,16 +461,7 @@ async function handleEvent(event) {
   if (!userId) return;
 
   if (event.type === "follow") {
-    userState.set(userId, {
-      step: "name",
-      userId,
-      name: "",
-      age: "",
-      phone: "",
-      job: "",
-      area: "",
-      timing: "",
-    });
+    resetConversation(userId);
 
     await reply(event.replyToken, [createFirstQuestionMessage()]);
     return;
@@ -457,16 +471,7 @@ async function handleEvent(event) {
     const text = event.message.text.trim();
 
     if (["最初から", "やり直し", "リセット"].includes(text)) {
-      userState.set(userId, {
-        step: "name",
-        userId,
-        name: "",
-        age: "",
-        phone: "",
-        job: "",
-        area: "",
-        timing: "",
-      });
+      resetConversation(userId);
 
       await reply(event.replyToken, [
         {
@@ -481,16 +486,7 @@ async function handleEvent(event) {
     const state = userState.get(userId);
 
     if (!state) {
-      userState.set(userId, {
-        step: "name",
-        userId,
-        name: "",
-        age: "",
-        phone: "",
-        job: "",
-        area: "",
-        timing: "",
-      });
+      resetConversation(userId);
 
       await reply(event.replyToken, [
         {
@@ -642,7 +638,7 @@ async function handleEvent(event) {
         return;
       }
 
-      await reply(event.replyToken, [createSlotQuickReply(slots, 0)]);
+      await reply(event.replyToken, [createSlotQuickReply(slots, 0, state.sessionId)]);
       return;
     }
 
@@ -676,6 +672,16 @@ async function handleEvent(event) {
       console.log("postback parsed:", data);
 
       if (data.type === "booking_more") {
+        if (data.sessionId !== state.sessionId) {
+          await reply(event.replyToken, [
+            {
+              type: "text",
+              text: "前回の候補です。最新の候補から選び直してください😊",
+            },
+          ]);
+          return;
+        }
+
         await reply(event.replyToken, [
           {
             type: "text",
@@ -695,11 +701,21 @@ async function handleEvent(event) {
           return;
         }
 
-        await pushMessage(userId, [createSlotQuickReply(slots, data.offset || 0)]);
+        await pushMessage(userId, [createSlotQuickReply(slots, data.offset || 0, state.sessionId)]);
         return;
       }
 
       if (data.type === "booking_other_request") {
+        if (data.sessionId !== state.sessionId) {
+          await reply(event.replyToken, [
+            {
+              type: "text",
+              text: "前回の候補です。最新の候補から選び直してください😊",
+            },
+          ]);
+          return;
+        }
+
         state.step = "booking_manual_request";
         userState.set(userId, state);
 
@@ -719,6 +735,16 @@ async function handleEvent(event) {
       }
 
       if (data.type === "booking_select") {
+        if (data.sessionId !== state.sessionId) {
+          await reply(event.replyToken, [
+            {
+              type: "text",
+              text: "前回の候補です。最新の候補から選び直してください😊",
+            },
+          ]);
+          return;
+        }
+
         await reply(event.replyToken, [
           {
             type: "text",
@@ -749,7 +775,7 @@ async function handleEvent(event) {
                 type: "text",
                 text: "申し訳ありません。選択された時間は埋まってしまいました。別の候補をお送りします。",
               },
-              createSlotQuickReply(slots, 0),
+              createSlotQuickReply(slots, 0, state.sessionId),
             ]);
             return;
           }
