@@ -2,6 +2,9 @@ import { google } from "googleapis";
 
 const userState = new Map();
 
+// ↓判定ユーザー数を変更する場合はこの数値を変更するだけ↓
+const MIN_AVAILABLE_USERS = 2; // 2ユーザー以上空いている枠だけ表示
+
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const LEAD_TIME_MS = 60 * 60 * 1000; // 現在時刻から1時間後以降
 
@@ -228,7 +231,7 @@ async function saveToGas(data) {
   }
 }
 
-async function getBusyList() {
+async function getBusyMap() {
   const calendar = await getCalendarClient();
 
   const calendarIds = (process.env.SOURCE_CALENDAR_IDS || "")
@@ -248,22 +251,19 @@ async function getBusyList() {
     },
   });
 
-  const busyList = [];
+  const busyMap = {};
   for (const id of calendarIds) {
-    const arr = fb.data.calendars?.[id]?.busy || [];
-    for (const b of arr) {
-      busyList.push({
-        start: new Date(b.start),
-        end: new Date(b.end),
-      });
-    }
+    busyMap[id] = (fb.data.calendars?.[id]?.busy || []).map((b) => ({
+      start: new Date(b.start),
+      end: new Date(b.end),
+    }));
   }
 
-  return busyList;
+  return { busyMap, calendarIds };
 }
 
 async function getAvailableSlots(offset = 0, limit = 5) {
-  const busyList = await getBusyList();
+  const { busyMap, calendarIds } = await getBusyMap();
 
   const now = new Date();
   const minSelectableTime = new Date(now.getTime() + LEAD_TIME_MS);
@@ -296,15 +296,28 @@ async function getAvailableSlots(offset = 0, limit = 5) {
           continue;
         }
 
-        const isBusy = busyList.some((b) =>
-          overlaps(slotStart, slotEnd, b.start, b.end)
-        );
+        // 何人空いているか数える
+        let availableCount = 0;
 
-        if (!isBusy) {
+        for (const calendarId of calendarIds) {
+          const busyList = busyMap[calendarId] || [];
+
+          const isBusy = busyList.some((b) =>
+            overlaps(slotStart, slotEnd, b.start, b.end)
+          );
+
+          if (!isBusy) {
+            availableCount++;
+          }
+        }
+
+        // 2ユーザー以上空いている場合のみ候補に追加
+        if (availableCount >= MIN_AVAILABLE_USERS) {
           allSlots.push({
             label: formatSlotLabel(slotStart),
             start: slotStart.toISOString(),
             end: slotEnd.toISOString(),
+            availableCount,
           });
         }
       }
@@ -331,14 +344,16 @@ async function isStillAvailable(start, end) {
     },
   });
 
+  let availableCount = 0;
+
   for (const id of calendarIds) {
     const busy = fb.data.calendars?.[id]?.busy || [];
-    if (busy.length > 0) {
-      return false;
+    if (busy.length === 0) {
+      availableCount++;
     }
   }
 
-  return true;
+  return availableCount >= MIN_AVAILABLE_USERS;
 }
 
 async function createBookingEvent(state, slot) {
